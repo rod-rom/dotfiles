@@ -1,14 +1,25 @@
 #!/bin/bash
 
-set -e  # Exit on any error
+# Dotfiles Setup Script
+# Downloads git-completion.bash and syncs dotfiles to home directory
+
+set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
 
-# Print colored output
+# Configuration
+readonly COMPLETION_URL="https://raw.githubusercontent.com/git/git/refs/heads/master/contrib/completion/git-completion.bash"
+readonly COMPLETION_FILE="$HOME/.git-completion.bash"
+readonly BASHRC_FILE="$HOME/.bashrc"
+readonly SOURCE_LINE="source ~/.git-completion.bash"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Print colored output functions
 print_status() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -18,102 +29,238 @@ print_warning() {
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
-# File paths
-COMPLETION_URL="https://raw.githubusercontent.com/git/git/refs/heads/master/contrib/completion/git-completion.bash"
-PROMPT_URL="https://raw.githubusercontent.com/mathiasbynens/dotfiles/refs/heads/main/.bash_prompt"
-COMPLETION_FILE="$HOME/.git-completion.bash"
-PROMPT_FILE="$HOME/.bash-prompt"
-BASHRC_FILE="$HOME/.bashrc"
-COMPLETION_SOURCE_LINE="source ~/.git-completion.bash"
-PROMPT_SOURCE_LINE="source ~/.bash-prompt"
+print_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
 
-print_status "Starting Git completion and prompt setup..."
+# Check if command exists
+command_exists() {
+    command -v "$1" &> /dev/null
+}
 
-# Check if curl or wget is available
-if command -v curl &> /dev/null; then
-    DOWNLOAD_CMD="curl -fsSL"
-    print_status "Using curl for download"
-elif command -v wget &> /dev/null; then
-    DOWNLOAD_CMD="wget -q -O -"
-    print_status "Using wget for download"
-else
-    print_error "Neither curl nor wget is available. Please install one of them."
-    exit 1
-fi
+# Download git completion with better error handling
+download_git_completion() {
+    print_step "Setting up Git completion..."
+    
+    # Check if already exists and is recent (less than 30 days old)
+    if [[ -f "$COMPLETION_FILE" ]]; then
+        local file_age
+        file_age=$(find "$COMPLETION_FILE" -mtime -30 2>/dev/null | wc -l)
+        if [[ $file_age -gt 0 ]]; then
+            print_status "Git completion file is recent, skipping download"
+            return 0
+        fi
+    fi
+    
+    # Determine download command
+    local download_cmd
+    if command_exists curl; then
+        download_cmd="curl -fsSL --connect-timeout 10 --max-time 30"
+        print_status "Using curl for download"
+    elif command_exists wget; then
+        download_cmd="wget -q -T 30 -O -"
+        print_status "Using wget for download"
+    else
+        print_error "Neither curl nor wget is available. Please install one of them."
+        return 1
+    fi
+    
 
-# Download git-completion.bash
-print_status "Downloading git-completion.bash to $COMPLETION_FILE..."
-if $DOWNLOAD_CMD "$COMPLETION_URL" > "$COMPLETION_FILE"; then
+    
+    # Download with better error handling
+    print_status "Downloading git-completion.bash to $COMPLETION_FILE..."
+    if ! $download_cmd "$COMPLETION_URL" > "$COMPLETION_FILE.tmp"; then
+        print_error "Failed to download git-completion.bash"
+        rm -f "$COMPLETION_FILE.tmp"
+        return 1
+    fi
+    
+    # Verify download (basic check)
+    if [[ ! -s "$COMPLETION_FILE.tmp" ]]; then
+        print_error "Downloaded file is empty"
+        rm -f "$COMPLETION_FILE.tmp"
+        return 1
+    fi
+    
+    # Move temp file to final location
+    mv "$COMPLETION_FILE.tmp" "$COMPLETION_FILE"
+    chmod 644 "$COMPLETION_FILE"
     print_status "Successfully downloaded git-completion.bash"
-else
-    print_error "Failed to download git-completion.bash"
-    exit 1
-fi
+}
 
-# Download git-prompt.sh
-print_status "Downloading .bash_prompt to $PROMPT_FILE..."
-if $DOWNLOAD_CMD "$PROMPT_URL" > "$PROMPT_FILE"; then
-    print_status "Successfully downloaded .bash_prompt"
-else
-    print_error "Failed to download .bash_prompt"
-    exit 1
-fi
-
-# Check if .bashrc exists
-if [ ! -f "$BASHRC_FILE" ]; then
-    print_warning ".bashrc not found. Creating a new one..."
-    touch "$BASHRC_FILE"
-fi
-
-# Check if the source lines already exist in .bashrc
-COMPLETION_EXISTS=$(grep -Fxq "$COMPLETION_SOURCE_LINE" "$BASHRC_FILE" && echo "true" || echo "false")
-PROMPT_EXISTS=$(grep -Fxq "$PROMPT_SOURCE_LINE" "$BASHRC_FILE" && echo "true" || echo "false")
-
-if [ "$COMPLETION_EXISTS" = "true" ] && [ "$PROMPT_EXISTS" = "true" ]; then
-    print_warning "Both git completion and prompt are already configured in .bashrc"
-else
-    # Add the source lines to .bashrc
-    print_status "Adding source lines to .bashrc..."
-    echo "" >> "$BASHRC_FILE"
-    echo "# Git completion and prompt" >> "$BASHRC_FILE"
+# Update git repository
+update_repository() {
+    print_step "Updating repository..."
     
-    if [ "$COMPLETION_EXISTS" = "false" ]; then
-        echo "$COMPLETION_SOURCE_LINE" >> "$BASHRC_FILE"
-        print_status "Added git completion to .bashrc"
-    else
-        print_warning "Git completion already configured, skipping..."
+    if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
+        print_warning "Not in a git repository, skipping git pull"
+        return 0
     fi
     
-    if [ "$PROMPT_EXISTS" = "false" ]; then
-        echo "$PROMPT_SOURCE_LINE" >> "$BASHRC_FILE"
-        print_status "Added bash prompt to .bashrc"
-    else
-        print_warning "Bash prompt already configured, skipping..."
+    cd "$SCRIPT_DIR"
+    
+    # Check if we have uncommitted changes
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        print_warning "Uncommitted changes detected, skipping git pull"
+        return 0
     fi
-fi
+    
+    # Check if we can reach the remote
+    if ! git ls-remote origin &>/dev/null; then
+        print_warning "Cannot reach remote repository, skipping git pull"
+        return 0
+    fi
+    
+    if git pull origin "$(git branch --show-current)" --ff-only; then
+        print_status "Repository updated successfully"
+    else
+        print_warning "Failed to update repository (continuing anyway)"
+    fi
+}
 
-# Verify the downloaded files
-if [ -f "$COMPLETION_FILE" ] && [ -s "$COMPLETION_FILE" ] && [ -f "$PROMPT_FILE" ] && [ -s "$PROMPT_FILE" ]; then
-    print_status "Git completion file is ready at $COMPLETION_FILE"
-    print_status "Bash prompt file is ready at $PROMPT_FILE"
-else
-    print_error "Something went wrong with the downloads"
-    exit 1
-fi
+# Sync dotfiles
+sync_dotfiles() {
+    print_step "Syncing dotfiles..."
+    
+    # Check if rsync is available
+    if ! command_exists rsync; then
+        print_error "rsync is not available. Please install rsync."
+        return 1
+    fi
+    
+    # Verify we're in the right directory
+    if [[ ! -f "$SCRIPT_DIR/bootstrap.sh" ]]; then
+        print_error "Cannot find bootstrap.sh - are you in the dotfiles directory?"
+        return 1
+    fi
+    
+    cd "$SCRIPT_DIR"
+    
+    # Create list of files to be synced (for user confirmation)
+    local files_to_sync
+    files_to_sync=$(find . -maxdepth 1 -type f -name ".*" ! -name ".git*" ! -name ".DS_Store" | sort)
+    
+    if [[ -n "$files_to_sync" ]]; then
+        print_status "Files to be synced:"
+        echo "$files_to_sync" | sed 's|^\./|  |'
+    fi
+    
+    # Perform the sync
+    if rsync \
+        --exclude ".git/" \
+        --exclude ".gitignore" \
+        --exclude ".DS_Store" \
+        --exclude ".osx" \
+        --exclude "bootstrap.sh" \
+        --exclude "README.md" \
+        --exclude "LICENSE*" \
+        --archive \
+        --verbose \
+        --human-readable \
+        --no-perms \
+        --itemize-changes \
+        . ~; then
+        print_status "Dotfiles synced successfully"
+    else
+        print_error "Failed to sync dotfiles"
+        return 1
+    fi
+}
 
-print_status "Setup complete!"
-echo ""
-echo "To activate git completion and prompt in your current session, run:"
-echo "  source ~/.bashrc"
-echo ""
-echo "Or simply open a new terminal window."
-echo ""
-echo "After activation, you'll have:"
-echo "  - Tab completion for git commands (git che<TAB> → git checkout)"
-echo "  - Tab completion for branch names (git checkout <TAB>)"
-echo "  - Tab completion for remote names, tags, and more!"
-echo "  - Git status in your prompt (showing current branch, dirty state, etc.)"
-echo ""
+# Source bash profile
+source_bash_profile() {
+    print_step "Sourcing bash profile..."
+    
+    if [[ -f "$HOME/.bash_profile" ]]; then
+        # shellcheck disable=SC1091
+        source "$HOME/.bash_profile"
+        print_status "Bash profile sourced successfully"
+    else
+        print_warning "No .bash_profile found to source"
+    fi
+}
+
+# Main execution function
+main() {
+    print_status "Starting dotfiles setup..."
+    
+    # Download git completion
+    if ! download_git_completion; then
+        print_error "Failed to download git completion"
+        exit 1
+    fi
+    
+    # Update repository
+    update_repository
+    
+    # Sync dotfiles with confirmation
+    if [[ "${1:-}" == "--force" ]] || [[ "${1:-}" == "-f" ]]; then
+        print_status "Force mode enabled, skipping confirmation"
+        if ! sync_dotfiles; then
+            exit 1
+        fi
+    else
+        echo
+        print_warning "This may overwrite existing files in your home directory."
+        read -p "Are you sure you want to continue? (y/N) " -n 1 -r
+        echo
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! sync_dotfiles; then
+                exit 1
+            fi
+        else
+            print_status "Sync cancelled by user"
+            exit 0
+        fi
+    fi
+    
+    # Source bash profile
+    source_bash_profile
+    
+    print_status "Setup completed successfully!"
+    echo
+    print_status "You may want to restart your terminal or run 'source ~/.bash_profile' to apply changes"
+}
+
+# Show help
+show_help() {
+    cat << EOF
+Dotfiles Setup Script
+
+USAGE:
+    $0 [OPTIONS]
+
+OPTIONS:
+    -f, --force     Skip confirmation prompt
+    -h, --help      Show this help message
+
+DESCRIPTION:
+    This script downloads git-completion.bash and syncs dotfiles from the current
+    directory to your home directory. It will ask for confirmation before 
+    overwriting existing files unless --force is used.
+
+EOF
+}
+
+# Parse command line arguments
+case "${1:-}" in
+    -h|--help)
+        show_help
+        exit 0
+        ;;
+    -f|--force)
+        main "$@"
+        ;;
+    "")
+        main
+        ;;
+    *)
+        print_error "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+esac
