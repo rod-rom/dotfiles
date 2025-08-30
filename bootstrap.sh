@@ -174,13 +174,37 @@ sync_dotfiles() {
 source_bash_profile() {
     print_step "Sourcing bash profile..."
     
+    # Temporarily disable unbound variable checking for sourcing user files
+    # since dotfiles may reference variables that aren't set in this context
+    set +u
+    
+    local sourced=false
     if [[ -f "$HOME/.bash_profile" ]]; then
         # shellcheck disable=SC1091
-        source "$HOME/.bash_profile"
-        print_status "Bash profile sourced successfully"
-    else
-        print_warning "No .bash_profile found to source"
+        if source "$HOME/.bash_profile" 2>/dev/null; then
+            print_status "Bash profile sourced successfully"
+            sourced=true
+        else
+            print_warning "Bash profile sourcing encountered errors (this is often normal)"
+            sourced=true
+        fi
+    elif [[ -f "$HOME/.bashrc" ]]; then
+        # shellcheck disable=SC1091
+        if source "$HOME/.bashrc" 2>/dev/null; then
+            print_status "Bashrc sourced successfully"
+            sourced=true
+        else
+            print_warning "Bashrc sourcing encountered errors (this is often normal)"
+            sourced=true
+        fi
     fi
+    
+    if [[ "$sourced" == false ]]; then
+        print_warning "No .bash_profile or .bashrc found to source"
+    fi
+    
+    # Re-enable unbound variable checking
+    set -u
 }
 
 # Main execution function
