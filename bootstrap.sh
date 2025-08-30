@@ -16,7 +16,6 @@ readonly NC='\033[0m' # No Color
 readonly COMPLETION_URL="https://raw.githubusercontent.com/git/git/refs/heads/master/contrib/completion/git-completion.bash"
 readonly COMPLETION_FILE="$HOME/.git-completion.bash"
 readonly BASHRC_FILE="$HOME/.bashrc"
-readonly SOURCE_LINE="source ~/.git-completion.bash"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Print colored output functions
